@@ -26,7 +26,7 @@ EMAIL_FROM     = os.environ.get("EMAIL_FROM",     "")
 EMAIL_TO       = os.environ.get("EMAIL_TO",       "")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
 SMTP_SERVER    = "smtp.gmail.com"
-SMTP_PORT      = 587
+SMTP_PORT      = 465
 PORT           = int(os.environ.get("PORT", 8080))
 
 # ── Logging ────────────────────────────────────────────────
@@ -45,8 +45,7 @@ def send_email(subject: str, body: str):
     msg["From"]    = EMAIL_FROM
     msg["To"]      = EMAIL_TO
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(EMAIL_FROM, EMAIL_PASSWORD)
             server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
         log.info(f"Email sent: {subject}")
