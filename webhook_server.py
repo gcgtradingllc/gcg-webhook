@@ -1,33 +1,32 @@
+
 """
 GCG Trading — TradingView Webhook Receiver
 ==========================================
-Receives alerts from TradingView and sends email notifications.
+Receives alerts from TradingView and sends email notifications via SendGrid.
 Deploy on Railway.app for a free permanent public URL.
 
 Setup:
   1. Deploy to Railway (see README)
   2. Set environment variables:
-       EMAIL_FROM     = your Gmail address
-       EMAIL_TO       = destination email
-       EMAIL_PASSWORD = Gmail app password (16-char)
+       SENDGRID_API_KEY = your SendGrid API key (starts with SG.)
+       EMAIL_FROM       = your verified sender email
+       EMAIL_TO         = destination email
   3. Copy your Railway URL into TradingView alert webhook field
 """
 
 import os
 import json
-import smtplib
 import logging
+import urllib.request
+import urllib.error
 from datetime import datetime
-from email.mime.text import MIMEText
 from flask import Flask, request, jsonify
 
 # ── Config from environment variables ─────────────────────
-EMAIL_FROM     = os.environ.get("EMAIL_FROM",     "")
-EMAIL_TO       = os.environ.get("EMAIL_TO",       "")
-EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
-SMTP_SERVER    = "smtp.gmail.com"
-SMTP_PORT      = 465
-PORT           = int(os.environ.get("PORT", 8080))
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
+EMAIL_FROM       = os.environ.get("EMAIL_FROM", "")
+EMAIL_TO         = os.environ.get("EMAIL_TO", "")
+PORT             = int(os.environ.get("PORT", 8080))
 
 # ── Logging ────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -35,31 +34,40 @@ log = logging.getLogger("webhook")
 
 app = Flask(__name__)
 
-# ── Email sender ───────────────────────────────────────────
+# ── Email sender via SendGrid ──────────────────────────────
 def send_email(subject: str, body: str):
-    if not EMAIL_FROM or not EMAIL_PASSWORD:
-        log.warning("Email credentials not configured — skipping email")
+    if not SENDGRID_API_KEY or not EMAIL_FROM:
+        log.warning("SendGrid credentials not configured — skipping email")
         return
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"]    = EMAIL_FROM
-    msg["To"]      = EMAIL_TO
+    payload = json.dumps({
+        "personalizations": [{"to": [{"email": EMAIL_TO}]}],
+        "from": {"email": EMAIL_FROM},
+        "subject": subject,
+        "content": [{"type": "text/plain", "value": body}]
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {SENDGRID_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
     try:
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(EMAIL_FROM, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
-        log.info(f"Email sent: {subject}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            log.info(f"Email sent via SendGrid: {subject} (status {resp.status})")
+    except urllib.error.HTTPError as e:
+        log.error(f"SendGrid HTTP error: {e.code} {e.read().decode()}")
     except Exception as e:
-        log.error(f"Email failed: {e}")
+        log.error(f"SendGrid error: {e}")
 
 # ── Webhook endpoint ───────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        # TradingView sends JSON body
         data = request.get_json(force=True, silent=True)
         if not data:
-            # Try raw text (some TV plans send plain text)
             raw = request.data.decode("utf-8").strip()
             try:
                 data = json.loads(raw)
@@ -76,22 +84,19 @@ def webhook():
         ma_val    = data.get("ma",        "?")
         time_str  = data.get("time",      datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-        # Format price and MA
         try:    price_f = f"${float(price):.2f}"
         except: price_f = price
         try:    ma_f = f"${float(ma_val):.2f}"
         except: ma_f = ma_val
 
-        # Emoji based on direction
         if direction == "ABOVE":
-            emoji   = "🟢"
-            signal  = "crossed ABOVE"
+            emoji  = "🟢"
+            signal = "crossed ABOVE"
         else:
-            emoji   = "🔴"
-            signal  = "crossed BELOW"
+            emoji  = "🔴"
+            signal = "crossed BELOW"
 
         subject = f"{emoji} {ticker} {signal} {period}-day MA  [{list_type} list]"
-
         body = f"""GCG Trading — MA Cross Alert
 
 Ticker    : {ticker}
@@ -122,10 +127,9 @@ def health():
 
 @app.route("/test", methods=["GET"])
 def test():
-    """Hit /test to send a test email and confirm everything works."""
     send_email(
         "✅ GCG Trading Webhook — Test",
-        f"Webhook server is running and email is configured correctly.\nTime: {datetime.now()}"
+        f"Webhook server is running and SendGrid email is configured correctly.\nTime: {datetime.now()}"
     )
     return jsonify({"status": "test email sent"}), 200
 
