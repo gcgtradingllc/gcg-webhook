@@ -1,17 +1,8 @@
-
 """
 GCG Trading — TradingView Webhook Receiver
 ==========================================
 Receives alerts from TradingView and sends email notifications via SendGrid.
 Deploy on Railway.app for a free permanent public URL.
-
-Setup:
-  1. Deploy to Railway (see README)
-  2. Set environment variables:
-       SENDGRID_API_KEY = your SendGrid API key (starts with SG.)
-       EMAIL_FROM       = your verified sender email
-       EMAIL_TO         = destination email
-  3. Copy your Railway URL into TradingView alert webhook field
 """
 
 import os
@@ -22,19 +13,16 @@ import urllib.error
 from datetime import datetime
 from flask import Flask, request, jsonify
 
-# ── Config from environment variables ─────────────────────
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
 EMAIL_FROM       = os.environ.get("EMAIL_FROM", "")
 EMAIL_TO         = os.environ.get("EMAIL_TO", "")
 PORT             = int(os.environ.get("PORT", 8080))
 
-# ── Logging ────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("webhook")
 
 app = Flask(__name__)
 
-# ── Email sender via SendGrid ──────────────────────────────
 def send_email(subject: str, body: str):
     if not SENDGRID_API_KEY or not EMAIL_FROM:
         log.warning("SendGrid credentials not configured — skipping email")
@@ -62,17 +50,18 @@ def send_email(subject: str, body: str):
     except Exception as e:
         log.error(f"SendGrid error: {e}")
 
-# ── Webhook endpoint ───────────────────────────────────────
+def fmt_price(val):
+    try:    return f"${float(val):.2f}"
+    except: return val or "—"
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json(force=True, silent=True)
         if not data:
             raw = request.data.decode("utf-8").strip()
-            try:
-                data = json.loads(raw)
-            except Exception:
-                data = {"raw": raw}
+            try:    data = json.loads(raw)
+            except: data = {"raw": raw}
 
         log.info(f"Webhook received: {data}")
 
@@ -81,29 +70,37 @@ def webhook():
         direction = data.get("direction", "?")
         period    = data.get("period",    "?")
         list_type = data.get("list",      "?")
-        ma_val    = data.get("ma",        "?")
         time_str  = data.get("time",      datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-        try:    price_f = f"${float(price):.2f}"
-        except: price_f = price
-        try:    ma_f = f"${float(ma_val):.2f}"
-        except: ma_f = ma_val
+        ma5       = data.get("5sma",      None)
+        ma10      = data.get("10sma",     None)
+        ema20     = data.get("20ema",     None)
 
         if direction == "ABOVE":
-            emoji  = "🟢"
+            emoji  = "🔴"
             signal = "crossed ABOVE"
         else:
-            emoji  = "🔴"
+            emoji  = "🟢"
             signal = "crossed BELOW"
 
-        subject = f"{emoji} {ticker} {signal} {period}-day MA  [{list_type} list]"
+        subject = f"{emoji} {ticker} {signal} {period}-day MA  [{list_type}]"
+
+        ma_section = ""
+        if ma5 or ma10 or ema20:
+            ma_section = f"""
+--- Moving Averages ---
+5-Day  SMA : {fmt_price(ma5)}
+10-Day SMA : {fmt_price(ma10)}
+20-Day EMA : {fmt_price(ema20)}
+"""
+
         body = f"""GCG Trading — MA Cross Alert
+{'='*40}
 
 Ticker    : {ticker}
 Signal    : {signal} {period}-day MA
-Price     : {price_f}
-MA Value  : {ma_f}
+Price     : {fmt_price(price)}
 List      : {list_type}
+{ma_section}
 Time      : {time_str}
 
 ---
@@ -116,7 +113,6 @@ Sent by GCG Trading TradingView Webhook
         log.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# ── Health check ───────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({
@@ -129,7 +125,24 @@ def health():
 def test():
     send_email(
         "✅ GCG Trading Webhook — Test",
-        f"Webhook server is running and SendGrid email is configured correctly.\nTime: {datetime.now()}"
+        f"""GCG Trading — MA Cross Alert
+{'='*40}
+
+Ticker    : TEST
+Signal    : crossed BELOW 4/8/18-day MA
+Price     : $150.00
+List      : LONG
+
+--- Moving Averages ---
+5-Day  SMA : $151.20
+10-Day SMA : $153.40
+20-Day EMA : $155.10
+
+Time      : {datetime.now()}
+
+---
+Sent by GCG Trading TradingView Webhook
+"""
     )
     return jsonify({"status": "test email sent"}), 200
 
